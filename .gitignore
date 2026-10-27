@@ -1,0 +1,17 @@
+# Secrets and local operator instructions
+.env
+.env.*
+!.env.example
+AGENTS.md
+
+# Runtime state and internal material
+data/
+logs/
+docs/
+
+# Python tooling
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+.venv/

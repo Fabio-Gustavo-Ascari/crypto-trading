@@ -1,0 +1,10 @@
+policy_version: "0.1"
+base_currency: BRL
+initial_cash: 200.0
+max_position_fraction: 0.05
+max_open_positions: 3
+max_daily_loss_fraction: 0.03
+max_weekly_loss_fraction: 0.08
+max_market_age_seconds: 300
+require_stop_loss: true
+paper_mode: true
