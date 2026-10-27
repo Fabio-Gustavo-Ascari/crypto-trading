@@ -25,3 +25,13 @@ def test_position_limit(tmp_path):
     b.execute(buy(),{'BTC':quote()})
     q={'BTC':quote(),'ETH':quote().model_copy(update={'symbol':'ETH'})}
     assert b.execute(buy('eth').model_copy(update={'symbol':'ETH'}),q)['reason']=='position_limit'
+
+def test_report_exposes_latest_discovery_summary(tmp_path):
+    s=Store(tmp_path/'discovery.db')
+    s.event('market',{'research':{'summary':{'assets_researched':87,'assets_filtered':8,'security_rejections':14}}})
+    assert s.report()['latest_discovery']['assets_researched']==87
+
+def test_report_tolerates_legacy_list_research(tmp_path):
+    s=Store(tmp_path/'legacy-discovery.db')
+    s.event('market',{'research':[]})
+    assert s.report()['latest_discovery']=={}

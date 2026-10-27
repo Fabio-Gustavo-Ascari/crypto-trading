@@ -25,7 +25,11 @@ python -m venv .venv
 ```
 
 CLI Codex precisa estar no PATH. Integração preparada para CLI 0.162.1. `--model NOME`
-escolhe um modelo disponível na conta; omitido usa `gpt-5.6-luna`, presente no catálogo
+escolhe um modelo disponível na conta; omitido usa `gpt-6-luna`. A variável
+`CRYPTO_HARNESS_MODEL` define o padrão local e `CRYPTO_HARNESS_FALLBACK_MODELS`
+aceita uma lista separada por vírgulas (padrão: `gpt-5.6-luna`). Cada tentativa,
+inclusive stderr e categoria de falha, vai para o journal; HOLD por falha só ocorre
+depois que todos os modelos configurados falharem.
 local desta conta, com esforço baixo. Se não estiver disponível em outra conta,
 selecione outro com `--model`.
 
@@ -61,16 +65,21 @@ saída. Quedas de energia não permitem monitorar posições.
 
 ## Dados e escopo
 
-- BTC/ETH/SOL: Binance pública, pares BRL com bid/ask, estatísticas de 24h e até
-  100 candles fechados em 5m, 15m e 1h por ciclo de pesquisa. A IA recebe tendência
+- Binance: descoberta dinâmica dos pares USDT mais líquidos, normalizados para BRL
+  pela cotação USDTBRL, com bid/ask, volume e até 100 candles fechados em 5m, 15m,
+  1h e 4h por ciclo de pesquisa. A IA recebe tendência
   EMA, RSI, ATR, suporte/resistência, volume relativo e padrões detectados — não só
   um candle atrasado nem um candle ainda em formação.
-- Fallback CoinGecko em BRL com timestamp e spread **estimado** de 0,2%.
-- DEX Screener: cinco pares para pesquisa; não negociáveis sem análise de contrato.
+- CoinGecko: tendência como fonte de pesquisa, nunca como uma cotação executável.
+- DEX Screener: descoberta de perfis e pares; sem dados de contrato, holders,
+  segurança e possibilidade de venda o token fica apenas em pesquisa.
 - Falhas HTTP/rate limit geram fallback/HOLD, sem repetição dentro do ciclo.
 
-`Market.collect()` é a interface para futuro MCP. MCP, Telegram e análise on-chain
-não estão implementados. Endpoints usados são públicos; chave CoinGecko opcional
+`Market.collect()` normaliza candidatos, filtra liquidez/volume/histórico, enriquece
+gráficos e limita o contexto de decisão aos 12 melhores ativos elegíveis. MCP,
+Telegram, GoPlus e Solscan ainda são extensões futuras: enquanto GoPlus/Solscan não
+produzirem evidência de segurança, tokens on-chain não passam para paper execution.
+Endpoints usados são públicos; chave CoinGecko opcional
 via variável de ambiente `COINGECKO_DEMO_KEY`. `.env` não é carregado automaticamente.
 
 ## Regras e contabilidade
@@ -78,8 +87,8 @@ via variável de ambiente `COINGECKO_DEMO_KEY`. `.env` não é carregado automat
 R$200 iniciais, 5% de margem por posição, três posições, stop obrigatório.
 Bloqueia entradas com perda de 3% diária ou 8% desde o início do experimento (não
 renova por semana). Saídas continuam permitidas. Preços expiram em 180 segundos.
-Não reforça posições existentes. Identidade CEX é uma lista fixa de pares BRL;
-os tokens DEX carregam rede, contrato e pool e não entram no broker.
+Não reforça posições existentes. O broker aceita somente cotações recentes marcadas
+como elegíveis pelo pipeline; fontes de pesquisa não podem criar uma ordem por si só.
 
 O paper simula contratos direcionais: long lucra quando o preço sobe e short quando
 cai. `amount_brl` é a margem e a IA pode propor qualquer alavancagem >= 1, sem teto

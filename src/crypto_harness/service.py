@@ -7,7 +7,7 @@ import os
 import threading
 from .core import Store, Broker, Policy, Proposal, now
 from .market import Market
-from .agent import decide
+from .agent import AgentFailure, decide_with_fallback, default_model
 
 @contextmanager
 def run_lock(directory):
@@ -42,14 +42,20 @@ def cycle(store,broker,market,ai=False,max_daily_calls=8,model=None,stop_event=N
     elif not store.reserve_call(max_daily_calls): proposal=hold('Daily AI call budget reached')
     else:
         state=store.state()
-        context={'time_utc':now().isoformat(),'rules':broker.policy.model_dump(mode='json'),'rules_hash':broker.policy.fingerprint,'portfolio':state,'evidence':snapshot}
+        research_data=research if isinstance(research,dict) else {}
+        decision_evidence={'quotes':snapshot['quotes'],'discovery_summary':research_data.get('summary',{}),'approved_candidates':research_data.get('approved_candidates',[]),'errors':errors}
+        context={'time_utc':now().isoformat(),'rules':broker.policy.model_dump(mode='json'),'rules_hash':broker.policy.fingerprint,'portfolio':state,'evidence':decision_evidence}
         store.event('agent_input',context)
         try:
-            proposal,usage=decide(context,model=model)
+            proposal,usage,attempts=decide_with_fallback(context,model=model)
             store.event('agent_usage',usage)
+            store.event('agent_attempts',{'attempts':attempts,'selected_model':attempts[-1]['model']})
+        except AgentFailure as error:
+            store.event('agent_failure',{'category':error.category,'model':error.model,'error':str(error),'stderr':error.stderr})
+            proposal=hold('All configured AI models failed; execution skipped')
         except (RuntimeError,ValueError,OSError) as error:
-            store.event('agent_failure',{'error':str(error)[:300]})
-            proposal=hold('AI unavailable or invalid output; no retry this cycle')
+            store.event('agent_failure',{'category':'internal_error','error':str(error)})
+            proposal=hold('AI orchestration failed; execution skipped')
     if stop_event and stop_event.is_set(): proposal=hold('Stop requested before execution')
     # Recollect for execution: the decision can take up to 90 seconds.
     if proposal.action in ('OPEN_LONG','OPEN_SHORT','CLOSE_LONG','CLOSE_SHORT'):
@@ -61,7 +67,7 @@ def cycle(store,broker,market,ai=False,max_daily_calls=8,model=None,stop_event=N
         quotes=fresh
         store.event('execution_market',{'quotes':{s:q.model_dump(mode='json') for s,q in quotes.items()},'errors':refresh_errors})
     result=broker.execute(proposal,quotes)
-    print(json.dumps({'at':now().isoformat(),'quotes':len(quotes),'status':result['status'],'reason':result.get('reason'),'action':proposal.action},ensure_ascii=False),flush=True)
+    print(json.dumps({'at':now().isoformat(),'quotes':len(quotes),'discovery':research.get('summary',{}) if isinstance(research,dict) else {},'status':result['status'],'reason':result.get('reason'),'action':proposal.action},ensure_ascii=False),flush=True)
     return result
 
 def export_report(store,directory):
@@ -98,7 +104,7 @@ def run(directory,once=False,ai=True,interval=900,monitor_interval=30,max_calls=
             finally: watcher.close()
         thread=threading.Thread(target=monitor,daemon=True)
         thread.start()
-        store.event('started',{'ai':ai,'interval':interval,'max_calls_session':max_calls,'max_calls_day':max_daily_calls,'model':model or 'gpt-5.6-luna'})
+        store.event('started',{'ai':ai,'interval':interval,'max_calls_session':max_calls,'max_calls_day':max_daily_calls,'model':model or default_model()})
         print('Harness running. Ctrl+C or another terminal: crypto-harness stop',flush=True)
         try:
             while not done.is_set():
@@ -107,7 +113,7 @@ def run(directory,once=False,ai=True,interval=900,monitor_interval=30,max_calls=
                 result=cycle(store,broker,market,enabled,max_daily_calls,model,done)
                 after=sum(store.report()['calls'].values())
                 calls+=after-before
-                if result.get('reason','').startswith('AI unavailable'): failures+=1
+                if result.get('reason','').startswith('All configured AI models failed'): failures+=1
                 elif enabled and after>before: failures=0
                 cycles+=1
                 export_report(store,directory)

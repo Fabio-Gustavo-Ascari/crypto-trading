@@ -21,12 +21,13 @@ class Strict(BaseModel):
     model_config = ConfigDict(extra='forbid', frozen=True, allow_inf_nan=False)
 
 class Quote(Strict):
-    symbol: Literal['BTC','ETH','SOL']
+    symbol: str = Field(pattern=r'^[A-Z0-9]{2,20}$')
     bid: D = Field(gt=0)
     ask: D = Field(gt=0)
     observed_at: AwareDatetime
     source: str
     evidence_id: str
+    execution_eligible: bool = True
 
     @model_validator(mode='after')
     def valid_spread(self):
@@ -103,6 +104,7 @@ class Store:
             decisions=[json.loads(r[0]) for r in c.execute('SELECT body FROM decisions ORDER BY at')]
             events=[{'at':r[0],'kind':r[1],'data':json.loads(r[2])} for r in c.execute('SELECT at,kind,body FROM events ORDER BY id DESC LIMIT 20')]
             last=c.execute("SELECT at,body FROM events WHERE kind='valuation' ORDER BY id DESC LIMIT 1").fetchone()
+            market=c.execute("SELECT body FROM events WHERE kind='market' ORDER BY id DESC LIMIT 1").fetchone()
             valuations=[json.loads(r[0]) for r in c.execute("SELECT body FROM events WHERE kind='valuation'")]
             filled=[d for d in decisions if d['status']=='FILLED']
             state=self.state(c)
@@ -111,7 +113,10 @@ class Store:
                      'filled_orders':len(filled),'decision_counts':{s:sum(d['status']==s for d in decisions) for s in ('FILLED','HOLD','REJECT','REJECTED')},
                      'max_drawdown':str(max((D(v['drawdown']) for v in valuations),default=D(0))),
                      'unclosed_positions':list(state['positions'])}
-            return {'summary':summary,'state':state,'last_valuation':({'at':last[0],**json.loads(last[1])} if last else None),'decisions':decisions,'recent_events':events,'calls':dict(c.execute('SELECT day,count FROM calls'))}
+            latest_market=json.loads(market[0]) if market else {}
+            latest_research=latest_market.get('research',{}) if isinstance(latest_market,dict) else {}
+            latest_discovery=latest_research.get('summary',{}) if isinstance(latest_research,dict) else {}
+            return {'summary':summary,'state':state,'last_valuation':({'at':last[0],**json.loads(last[1])} if last else None),'latest_discovery':latest_discovery,'decisions':decisions,'recent_events':events,'calls':dict(c.execute('SELECT day,count FROM calls'))}
 
 class Broker:
     def __init__(self,store,policy):
@@ -147,6 +152,7 @@ class Broker:
                 result.update(status=p.action,reason=p.reason)
             else:
                 if not q or not q.fresh(): error='missing_or_stale_quote'
+                elif p.action in ('OPEN_LONG','OPEN_SHORT') and not q.execution_eligible: error='candidate_not_execution_eligible'
                 elif q.evidence_id not in p.evidence_ids: error='missing_evidence'
                 elif p.action in ('OPEN_LONG','OPEN_SHORT'):
                     if any(s not in quotes or not quotes[s].fresh() for s in state['positions']): error='unvalued_position'
