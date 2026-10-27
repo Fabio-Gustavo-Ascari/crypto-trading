@@ -38,9 +38,11 @@ class Quote(Strict):
 
 class Proposal(Strict):
     decision_id: str = Field(min_length=1,max_length=100)
-    action: Literal['BUY','SELL','HOLD','REJECT']
+    action: Literal['OPEN_LONG','OPEN_SHORT','CLOSE_LONG','CLOSE_SHORT','HOLD','REJECT']
     symbol: str = Field(max_length=30)
     amount_brl: D = Field(ge=0)
+    # Margin in BRL. The model may propose any finite leverage >= 1 in paper mode.
+    leverage: D = Field(default=D('1'), ge=1)
     stop_pct: D = Field(gt=0,lt=100)
     horizon_minutes: int = Field(ge=1,le=1440)
     reason: str = Field(min_length=1,max_length=2000)
@@ -54,6 +56,7 @@ class Policy(Strict):
     max_positions: int = 3
     fee: D = D('.001')
     slippage: D = D('.002')
+    maintenance_margin: D = D('.005')
 
     @property
     def fingerprint(self):
@@ -115,7 +118,21 @@ class Broker:
         self.store,self.policy=store,policy
 
     def equity(self,state,quotes):
-        return D(state['cash'])+sum(D(p['quantity'])*quotes[s].bid for s,p in state['positions'].items())
+        value=D(state['cash'])
+        for symbol,position in state['positions'].items():
+            q=quotes[symbol]
+            exit_price=q.bid*(1-self.policy.slippage) if position['side']=='long' else q.ask*(1+self.policy.slippage)
+            raw=(exit_price-D(position['entry']))*D(position['quantity'])
+            if position['side']=='short': raw=-raw
+            value+=D(position['margin'])+raw-exit_price*D(position['quantity'])*self.policy.fee
+        return value
+
+    def _gate_losses(self,state,quotes):
+        equity=self.equity(state,quotes)
+        if state['day']!=day(): state.update(day=day(),day_equity=str(equity),halted_day=None)
+        if equity<=D(state['day_equity'])*(1-self.policy.daily_loss): state['halted_day']=day()
+        if equity<=self.policy.initial_cash*(1-self.policy.experiment_loss): state['halted_experiment']=True
+        return equity
 
     def execute(self,p:Proposal,quotes:dict[str,Quote]):
         policy=self.policy
@@ -131,36 +148,51 @@ class Broker:
             else:
                 if not q or not q.fresh(): error='missing_or_stale_quote'
                 elif q.evidence_id not in p.evidence_ids: error='missing_evidence'
-                elif p.action=='SELL' and p.symbol not in state['positions']: error='no_position'
-                elif p.action=='BUY':
+                elif p.action in ('OPEN_LONG','OPEN_SHORT'):
                     if any(s not in quotes or not quotes[s].fresh() for s in state['positions']): error='unvalued_position'
                     else:
-                        equity=self.equity(state,quotes)
-                        if state['day']!=day(): state.update(day=day(),day_equity=str(equity),halted_day=None)
-                        if equity <= D(state['day_equity'])*(1-policy.daily_loss): state['halted_day']=day()
-                        if equity <= policy.initial_cash*(1-policy.experiment_loss): state['halted_experiment']=True
+                        equity=self._gate_losses(state,quotes)
                         if state['halted_day']==day() or state['halted_experiment']: error='loss_limit'
                         elif p.symbol in state['positions']: error='position_already_open'
                         elif len(state['positions'])>=policy.max_positions: error='position_limit'
                         elif p.amount_brl<=0 or p.amount_brl>equity*policy.position_fraction: error='position_size'
-                        elif p.amount_brl>D(state['cash']): error='insufficient_cash'
                         elif (q.ask/q.bid-1)>D('.02'): error='spread_limit'
+                        else:
+                            side='long' if p.action=='OPEN_LONG' else 'short'
+                            price=q.ask*(1+policy.slippage) if side=='long' else q.bid*(1-policy.slippage)
+                            notional=p.amount_brl*p.leverage
+                            fee=notional*policy.fee
+                            liquidation=price*(1-1/p.leverage+policy.maintenance_margin) if side=='long' else price*(1+1/p.leverage-policy.maintenance_margin)
+                            stop=price*(1-p.stop_pct/100) if side=='long' else price*(1+p.stop_pct/100)
+                            if p.amount_brl+fee>D(state['cash']): error='insufficient_cash_for_margin_and_fee'
+                            elif (side=='long' and stop<=liquidation) or (side=='short' and stop>=liquidation): error='stop_not_before_liquidation'
                 if error: result['reason']=error
-                elif p.action=='BUY':
-                    price=q.ask*(1+policy.slippage)
-                    notional=p.amount_brl/(1+policy.fee)
+                elif p.action in ('OPEN_LONG','OPEN_SHORT'):
+                    side='long' if p.action=='OPEN_LONG' else 'short'
+                    price=q.ask*(1+policy.slippage) if side=='long' else q.bid*(1-policy.slippage)
+                    notional=p.amount_brl*p.leverage
                     quantity=notional/price
-                    fee=p.amount_brl-notional
-                    state['cash']=str(D(state['cash'])-p.amount_brl)
-                    state['positions'][p.symbol]={'quantity':str(quantity),'entry':str(price),'cost':str(p.amount_brl),'stop':str(price*(1-p.stop_pct/100)),'expires':(now()+timedelta(minutes=p.horizon_minutes)).isoformat()}
-                    result.update(status='FILLED',price=str(price),quantity=str(quantity),fee=str(fee),reason=p.reason)
-                elif p.action=='SELL':
-                    position=state['positions'].pop(p.symbol)
-                    price=q.bid*(1-policy.slippage)
-                    gross=D(position['quantity'])*price
-                    fee=gross*policy.fee
-                    state['cash']=str(D(state['cash'])+gross-fee)
-                    result.update(status='FILLED',price=str(price),quantity=position['quantity'],fee=str(fee),pnl=str(gross-fee-D(position['cost'])),reason=p.reason)
+                    fee=notional*policy.fee
+                    liquidation=price*(1-1/p.leverage+policy.maintenance_margin) if side=='long' else price*(1+1/p.leverage-policy.maintenance_margin)
+                    stop=price*(1-p.stop_pct/100) if side=='long' else price*(1+p.stop_pct/100)
+                    state['cash']=str(D(state['cash'])-p.amount_brl-fee)
+                    state['positions'][p.symbol]={'side':side,'quantity':str(quantity),'entry':str(price),'margin':str(p.amount_brl),'leverage':str(p.leverage),'stop':str(stop),'liquidation':str(liquidation),'expires':(now()+timedelta(minutes=p.horizon_minutes)).isoformat()}
+                    result.update(status='FILLED',price=str(price),quantity=str(quantity),fee=str(fee),pnl=str(-fee),reason=p.reason,margin=str(p.amount_brl),notional=str(notional),leverage=str(p.leverage),liquidation=str(liquidation))
+                else:
+                    position=state['positions'].get(p.symbol)
+                    if not position: result['reason']='no_position'
+                    else:
+                        expected='CLOSE_LONG' if position['side']=='long' else 'CLOSE_SHORT'
+                        if p.action!=expected: result['reason']='wrong_close_action'
+                        else:
+                            state['positions'].pop(p.symbol)
+                            price=q.bid*(1-policy.slippage) if position['side']=='long' else q.ask*(1+policy.slippage)
+                            gross=(price-D(position['entry']))*D(position['quantity'])
+                            if position['side']=='short': gross=-gross
+                            fee=price*D(position['quantity'])*policy.fee
+                            pnl=gross-fee
+                            state['cash']=str(D(state['cash'])+D(position['margin'])+pnl)
+                            result.update(status='FILLED',price=str(price),quantity=position['quantity'],fee=str(fee),pnl=str(pnl),reason=p.reason,side=position['side'])
             c.execute('UPDATE state SET body=? WHERE id=1',(json.dumps(state),))
             c.execute('INSERT INTO decisions VALUES(?,?,?)',(p.decision_id,now().isoformat(),json.dumps(result)))
             return result
@@ -173,16 +205,17 @@ class Broker:
             with self.store.connect() as c:
                 c.execute('BEGIN IMMEDIATE')
                 state=self.store.state(c)
-                equity=self.equity(state,quotes)
-                if state['day']!=day(): state.update(day=day(),day_equity=str(equity),halted_day=None)
+                equity=self._gate_losses(state,quotes)
                 state['peak']=str(max(D(state['peak']),equity))
-                if equity<=D(state['day_equity'])*(1-self.policy.daily_loss): state['halted_day']=day()
-                if equity<=self.policy.initial_cash*(1-self.policy.experiment_loss): state['halted_experiment']=True
                 c.execute('UPDATE state SET body=? WHERE id=1',(json.dumps(state),))
             self.store.event('valuation',{'equity':str(equity),'drawdown':str(1-equity/D(state['peak']))})
         for symbol,position in state['positions'].items():
             q=quotes.get(symbol)
-            if q and q.fresh() and (close_all or q.bid<=D(position['stop']) or now()>=datetime.fromisoformat(position['expires'])):
-                p=Proposal(decision_id=str(uuid4()),action='SELL',symbol=symbol,amount_brl=0,stop_pct=2,horizon_minutes=1,reason='operator_close' if close_all else 'stop_or_expiry',evidence_ids=[q.evidence_id])
+            if q and q.fresh():
+                price=q.bid if position['side']=='long' else q.ask
+                liquidated=price<=D(position['liquidation']) if position['side']=='long' else price>=D(position['liquidation'])
+                stopped=price<=D(position['stop']) if position['side']=='long' else price>=D(position['stop'])
+                if not (close_all or liquidated or stopped or now()>=datetime.fromisoformat(position['expires'])): continue
+                p=Proposal(decision_id=str(uuid4()),action='CLOSE_LONG' if position['side']=='long' else 'CLOSE_SHORT',symbol=symbol,amount_brl=0,leverage=1,stop_pct=2,horizon_minutes=1,reason='operator_close' if close_all else 'liquidation' if liquidated else 'stop_or_expiry',evidence_ids=[q.evidence_id])
                 results.append(self.execute(p,quotes))
         return results

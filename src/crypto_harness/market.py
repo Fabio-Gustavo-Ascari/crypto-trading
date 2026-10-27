@@ -6,6 +6,7 @@ import json
 import os
 import httpx
 from .core import Quote
+from .analysis import analyze_ohlcv
 
 ASSETS={'BTC':'bitcoin','ETH':'ethereum','SOL':'solana'}
 
@@ -29,11 +30,16 @@ class Market:
                 quotes[symbol]=q
                 research.append({'symbol':symbol,'change_24h_pct':float(row['priceChangePercent']),'volume_brl':float(row['quoteVolume']),'evidence_id':q.evidence_id})
                 if discovery:
-                    try:
-                        candles=self.get('https://data-api.binance.vision/api/v3/klines',params={'symbol':symbol+'BRL','interval':'15m','limit':21})
-                        closed=[{'time_ms':int(c[0]),'close_brl':float(c[4]),'volume':float(c[5])} for c in candles if int(c[6])<=datetime.now(timezone.utc).timestamp()*1000][-20:]
-                        research.append({'symbol':symbol,'source':'binance:klines:15m','closed_candles':closed,'evidence_id':q.evidence_id})
-                    except (httpx.HTTPError,ValueError,KeyError,TypeError,IndexError): errors.append('binance:'+symbol+':history_unavailable')
+                    charts=[]
+                    for interval in ('5m','15m','1h'):
+                        try:
+                            candles=self.get('https://data-api.binance.vision/api/v3/klines',params={'symbol':symbol+'BRL','interval':interval,'limit':101})
+                            timestamp=datetime.now(timezone.utc).timestamp()*1000
+                            closed=[{'time_ms':int(c[0]),'open':float(c[1]),'high':float(c[2]),'low':float(c[3]),'close':float(c[4]),'volume':float(c[5])} for c in candles if int(c[6])<=timestamp]
+                            charts.append(analyze_ohlcv(closed[-100:],interval))
+                        except (httpx.HTTPError,ValueError,KeyError,TypeError,IndexError):
+                            errors.append('binance:'+symbol+':'+interval+'_history_unavailable')
+                    research.append({'symbol':symbol,'source':'binance:closed_ohlcv_multi_timeframe','chart_analysis':charts,'evidence_id':q.evidence_id})
             except (httpx.HTTPError,ValueError,KeyError,TypeError,OverflowError): errors.append('binance:'+symbol+':unavailable')
         missing=[s for s in ASSETS if s not in quotes]
         if missing:

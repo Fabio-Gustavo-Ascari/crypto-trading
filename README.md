@@ -1,7 +1,7 @@
 # Crypto Trading Harness
 
 MVP local com início e parada manuais. Python coleta, protege posições e registra
-resultados; Codex escolhe BUY/SELL/HOLD/REJECT.
+resultados; Codex escolhe OPEN_LONG, OPEN_SHORT, CLOSE_LONG, CLOSE_SHORT, HOLD ou REJECT.
 
 Nesta máquina, o ambiente virtual já foi preparado. Você pode abrir
 `Testar-sem-IA.cmd`, `Iniciar.cmd`, `Parar.cmd` e `Relatorio.cmd` diretamente.
@@ -25,7 +25,7 @@ python -m venv .venv
 ```
 
 CLI Codex precisa estar no PATH. Integração preparada para CLI 0.162.1. `--model NOME`
-escolhe um modelo disponível na conta; omitido usa `gpt-6-luna`, presente no catálogo
+escolhe um modelo disponível na conta; omitido usa `gpt-5.6-luna`, presente no catálogo
 local desta conta, com esforço baixo. Se não estiver disponível em outra conta,
 selecione outro com `--model`.
 
@@ -62,7 +62,9 @@ saída. Quedas de energia não permitem monitorar posições.
 ## Dados e escopo
 
 - BTC/ETH/SOL: Binance pública, pares BRL com bid/ask, estatísticas de 24h e até
-  20 candles fechados de 15 minutos por ciclo de pesquisa.
+  100 candles fechados em 5m, 15m e 1h por ciclo de pesquisa. A IA recebe tendência
+  EMA, RSI, ATR, suporte/resistência, volume relativo e padrões detectados — não só
+  um candle atrasado nem um candle ainda em formação.
 - Fallback CoinGecko em BRL com timestamp e spread **estimado** de 0,2%.
 - DEX Screener: cinco pares para pesquisa; não negociáveis sem análise de contrato.
 - Falhas HTTP/rate limit geram fallback/HOLD, sem repetição dentro do ciclo.
@@ -73,13 +75,17 @@ via variável de ambiente `COINGECKO_DEMO_KEY`. `.env` não é carregado automat
 
 ## Regras e contabilidade
 
-R$200 iniciais, 5% por posição incluindo taxas, três posições, stop obrigatório.
+R$200 iniciais, 5% de margem por posição, três posições, stop obrigatório.
 Bloqueia entradas com perda de 3% diária ou 8% desde o início do experimento (não
 renova por semana). Saídas continuam permitidas. Preços expiram em 180 segundos.
 Não reforça posições existentes. Identidade CEX é uma lista fixa de pares BRL;
 os tokens DEX carregam rede, contrato e pool e não entram no broker.
 
-Paper estima taxa de 0,1% e slippage adverso de 0,2% por lado, além do spread.
+O paper simula contratos direcionais: long lucra quando o preço sobe e short quando
+cai. `amount_brl` é a margem e a IA pode propor qualquer alavancagem >= 1, sem teto
+fixo nesta fase de teste. O motor ainda recusa margem insuficiente, stop que não
+protege antes da liquidação estimada, preço antigo e dados/evidências ausentes.
+Paper estima taxa de 0,1% sobre o notional e slippage adverso de 0,2% por lado, além do spread.
 Hipóteses de simulação, não taxas garantidas. Mínimos de ordem, profundidade,
 fills parciais e impostos não são modelados. Fill paper não comprova execução real.
 
@@ -102,6 +108,11 @@ valoração conhecida. Execuções de teste podem ser separadas:
 Testes usam fixtures identificadas sem APIs/créditos. Lock impede duas instâncias
 na mesma carteira. SQLite grava saldo e ordem juntos; restart não duplica decisão.
 Não versionar `.env`, `AGENTS.md`, `docs/`, `config/`, `data/`, `logs/`, chaves ou sessões.
+
+Integrações de análise: `ta-patterns` (MIT) é dependência direta e fornece padrões
+avaliados sem olhar candles futuros. `crypto-chart-patterns` (MIT) foi auditado como
+referência de padrões multi-timeframe; seu código não foi copiado. `market-analyzer`
+permanece uma possível evolução futura de MCP local, não uma dependência do núcleo.
 
 Documentação oficial: https://developers.openai.com/codex/noninteractive,
 https://developers.binance.com/docs/binance-spot-api-docs/rest-api/market-data-endpoints,

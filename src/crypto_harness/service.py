@@ -52,7 +52,7 @@ def cycle(store,broker,market,ai=False,max_daily_calls=8,model=None,stop_event=N
             proposal=hold('AI unavailable or invalid output; no retry this cycle')
     if stop_event and stop_event.is_set(): proposal=hold('Stop requested before execution')
     # Recollect for execution: the decision can take up to 90 seconds.
-    if proposal.action in ('BUY','SELL'):
+    if proposal.action in ('OPEN_LONG','OPEN_SHORT','CLOSE_LONG','CLOSE_SHORT'):
         fresh,_,refresh_errors=market.collect()
         old=quotes.get(proposal.symbol)
         current=fresh.get(proposal.symbol)
@@ -98,7 +98,7 @@ def run(directory,once=False,ai=True,interval=900,monitor_interval=30,max_calls=
             finally: watcher.close()
         thread=threading.Thread(target=monitor,daemon=True)
         thread.start()
-        store.event('started',{'ai':ai,'interval':interval,'max_calls_session':max_calls,'max_calls_day':max_daily_calls,'model':model or 'gpt-6-luna'})
+        store.event('started',{'ai':ai,'interval':interval,'max_calls_session':max_calls,'max_calls_day':max_daily_calls,'model':model or 'gpt-5.6-luna'})
         print('Harness running. Ctrl+C or another terminal: crypto-harness stop',flush=True)
         try:
             while not done.is_set():

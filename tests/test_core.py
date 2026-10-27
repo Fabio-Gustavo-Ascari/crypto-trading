@@ -7,7 +7,7 @@ def quote(price=100, age=0):
     return Quote(symbol='BTC', bid=price, ask=price+1, observed_at=datetime.now(timezone.utc)-timedelta(seconds=age), source='fixture', evidence_id='q1')
 
 def buy(id='one', **kw):
-    return Proposal(decision_id=id, action='BUY', symbol='BTC', amount_brl=kw.get('amount', 9), stop_pct=2, horizon_minutes=60, reason='test', evidence_ids=['q1'])
+    return Proposal(decision_id=id, action='OPEN_LONG', symbol='BTC', amount_brl=kw.get('amount', 9), leverage=1, stop_pct=2, horizon_minutes=60, reason='test', evidence_ids=['q1'])
 
 @pytest.fixture
 def broker(tmp_path):
@@ -19,7 +19,7 @@ def test_fill_idempotent_and_sell_roundtrip(broker):
     cash=broker.store.state()['cash']
     assert broker.execute(buy(),q)['status']=='DUPLICATE'
     assert broker.store.state()['cash']==cash
-    sell=buy('sell').model_copy(update={'action':'SELL'})
+    sell=buy('sell').model_copy(update={'action':'CLOSE_LONG'})
     assert broker.execute(sell,q)['status']=='FILLED'
     assert not broker.store.state()['positions']
     assert Decimal(broker.store.state()['cash']) < 200
@@ -65,7 +65,7 @@ def test_loss_limit_latched_and_sell_still_allowed(broker):
     p=buy('new').model_copy(update={'symbol':'ETH'})
     eth=quote().model_copy(update={'symbol':'ETH'})
     assert broker.execute(p,{'BTC':quote(),'ETH':eth})['reason']=='loss_limit'
-    assert broker.execute(buy('exit').model_copy(update={'action':'SELL'}),{'BTC':quote()})['status']=='FILLED'
+    assert broker.execute(buy('exit').model_copy(update={'action':'CLOSE_LONG'}),{'BTC':quote()})['status']=='FILLED'
 
 def test_future_quote_rejected(broker):
     assert broker.execute(buy(),{'BTC':quote(age=-120)})['status']=='REJECTED'
