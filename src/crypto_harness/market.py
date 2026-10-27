@@ -9,6 +9,22 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from .core import Quote
 from .analysis import analyze_ohlcv
 
+def aggregate_chart_bars(bars,minutes):
+    """Build complete higher-timeframe chart bars from closed 5-minute bars."""
+    if minutes not in (10,20): raise ValueError('only 10m and 20m aggregation are supported')
+    expected=minutes//5
+    bucket_ms=minutes*60_000
+    grouped={}
+    for bar in bars:
+        grouped.setdefault(int(bar['time_ms'])//bucket_ms,[]).append(bar)
+    output=[]
+    for bucket in sorted(grouped):
+        group=sorted(grouped[bucket],key=lambda item:item['time_ms'])
+        continuous=len(group)==expected and all(group[index]['time_ms']-group[index-1]['time_ms']==300_000 for index in range(1,len(group)))
+        if continuous:
+            output.append({'open':group[0]['open'],'high':max(item['high'] for item in group),'low':min(item['low'] for item in group),'close':group[-1]['close'],'volume':sum(item['volume'] for item in group)})
+    return output
+
 class AssetCandidate(BaseModel):
     """Normalized research record. Missing security never becomes execution approval."""
     model_config=ConfigDict(extra='forbid')
@@ -67,15 +83,20 @@ class Market:
         return r.json()
 
     def _charts(self,venue_symbol,rate,errors):
-        charts=[]
-        for interval in ('5m','15m','1h','4h'):
-            try:
-                candles=self.get('https://data-api.binance.vision/api/v3/klines',params={'symbol':venue_symbol,'interval':interval,'limit':101})
-                stamp=datetime.now(timezone.utc).timestamp()*1000
-                closed=[{'open':float(c[1])*rate,'high':float(c[2])*rate,'low':float(c[3])*rate,'close':float(c[4])*rate,'volume':float(c[5])} for c in candles if int(c[6])<=stamp]
-                charts.append(analyze_ohlcv(closed[-100:],interval))
-            except (httpx.HTTPError,ValueError,KeyError,TypeError,IndexError): errors.append('binance:'+venue_symbol+':'+interval+'_history_unavailable')
-        return charts
+        try:
+            candles=self.get('https://data-api.binance.vision/api/v3/klines',params={'symbol':venue_symbol,'interval':'5m','limit':405})
+            stamp=datetime.now(timezone.utc).timestamp()*1000
+            five=[{'time_ms':int(c[0]),'open':float(c[1])*rate,'high':float(c[2])*rate,'low':float(c[3])*rate,'close':float(c[4])*rate,'volume':float(c[5])} for c in candles if int(c[6])<=stamp]
+            ten=aggregate_chart_bars(five,10)
+            twenty=aggregate_chart_bars(five,20)
+            return [
+                analyze_ohlcv([{key:value for key,value in bar.items() if key!='time_ms'} for bar in five[-100:]],'5m'),
+                analyze_ohlcv(ten[-100:],'10m'),
+                analyze_ohlcv(twenty[-100:],'20m'),
+            ]
+        except (httpx.HTTPError,ValueError,KeyError,TypeError,IndexError):
+            errors.append('binance:'+venue_symbol+':chart_data_unavailable')
+            return []
 
     def _binance(self,discovery,errors):
         rows=self.get('https://data-api.binance.vision/api/v3/ticker/24hr')

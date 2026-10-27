@@ -1,5 +1,5 @@
 import httpx
-from crypto_harness.market import Market
+from crypto_harness.market import Market, aggregate_chart_bars
 from crypto_harness.market import AssetCandidate, eligible_candidates
 
 def test_all_providers_down_yields_empty_quotes():
@@ -33,3 +33,19 @@ def test_liquid_cex_candidate_is_bounded_for_execution():
     approved=eligible_candidates(candidates,limit=8)
     assert len(approved)==8
     assert all(candidate.execution_eligible for candidate in approved)
+
+def test_aggregate_chart_bars_builds_complete_10m_and_20m_periods_only():
+    bars=[
+        {'time_ms':0,'open':10,'high':12,'low':9,'close':11,'volume':2},
+        {'time_ms':300_000,'open':11,'high':14,'low':10,'close':13,'volume':3},
+        {'time_ms':600_000,'open':13,'high':15,'low':12,'close':14,'volume':5},
+        {'time_ms':900_000,'open':14,'high':16,'low':13,'close':15,'volume':7},
+        {'time_ms':1_200_000,'open':15,'high':17,'low':14,'close':16,'volume':11},
+    ]
+    ten=aggregate_chart_bars(bars,10)
+    twenty=aggregate_chart_bars(bars,20)
+    assert ten == [
+        {'open':10,'high':14,'low':9,'close':13,'volume':5},
+        {'open':13,'high':16,'low':12,'close':15,'volume':12},
+    ]
+    assert twenty == [{'open':10,'high':16,'low':9,'close':15,'volume':17}]
