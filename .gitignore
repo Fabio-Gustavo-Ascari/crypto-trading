@@ -3,6 +3,15 @@
 .env.*
 !.env.example
 AGENTS.md
+**/AGENTS.md
+config/
+*.db
+*.db-wal
+*.db-shm
+*.sqlite*
+*.session
+*.pem
+*.key
 
 # Runtime state and internal material
 data/
