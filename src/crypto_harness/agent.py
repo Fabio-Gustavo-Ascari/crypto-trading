@@ -60,7 +60,13 @@ def decide_once(context,model,timeout=90):
     with tempfile.TemporaryDirectory(prefix='crypto-decision-') as temp:
         root=Path(temp)
         schema=root/'answer.schema.json'
-        schema.write_text(json.dumps(Answer.model_json_schema()),encoding='utf-8')
+        answer_schema=Answer.model_json_schema()
+        # Codex structured outputs require every declared property to be in
+        # JSON Schema ``required``. Pydantic omits fields with defaults.
+        required=set(answer_schema.get('required', []))
+        required.update(answer_schema.get('properties', {}))
+        answer_schema['required']=sorted(required)
+        schema.write_text(json.dumps(answer_schema),encoding='utf-8')
         answer=root/'answer.json'
         args=codex_command()+['exec','--ignore-user-config','--ignore-rules','--ephemeral','--skip-git-repo-check','--sandbox','read-only','-C',str(root),'-c','approval_policy="never"','-c','features.shell_tool=false','-c','features.unified_exec=false','-c','features.apps=false','-c','web_search="disabled"','-c','project_doc_max_bytes=0','-c','model_reasoning_effort="low"','--output-schema',str(schema),'--output-last-message',str(answer),'--json']
         args+=['--model',model]

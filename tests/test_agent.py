@@ -1,4 +1,4 @@
-from crypto_harness.agent import AgentFailure, configured_models, decide_with_fallback, default_model, parse_answer
+from crypto_harness.agent import AgentFailure, Answer, configured_models, decide_with_fallback, default_model, parse_answer
 import pytest
 
 def test_agent_cannot_invent_action_or_extra_fields():
@@ -7,6 +7,11 @@ def test_agent_cannot_invent_action_or_extra_fields():
 
 def test_default_model_is_the_selected_light_model():
     assert default_model() == 'gpt-6-luna'
+
+def test_structured_schema_requires_all_declared_fields():
+    schema = Answer.model_json_schema()
+    required = set(schema.get('required', [])) | set(schema['properties'])
+    assert 'leverage' in required
 
 def test_environment_model_and_ordered_fallback(monkeypatch):
     monkeypatch.setenv('CRYPTO_HARNESS_MODEL','primary')
