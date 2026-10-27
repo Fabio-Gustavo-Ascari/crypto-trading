@@ -43,10 +43,13 @@ class AssetCandidate(BaseModel):
     execution_eligible: bool = False
     rejection_reasons: list[str] = Field(default_factory=list)
     chart_analysis: list[dict] = Field(default_factory=list)
+    trade_score: int = 0
+    direction_bias: str = 'mixed'
 
     @model_validator(mode='after')
     def classify(self):
         reasons=[]
+        if self.symbol in {'USDT','USDC','FDUSD','TUSD','USDP','BUSD','USD1','RLUSD','DAI','USDE'}: reasons.append('stablecoin_not_directional')
         if self.liquidity_brl < 25_000: reasons.append('liquidity_below_minimum')
         if self.volume_brl < 10_000: reasons.append('volume_below_minimum')
         if self.chart_status == 'not_enriched': reasons.append('chart_not_enriched')
@@ -56,6 +59,12 @@ class AssetCandidate(BaseModel):
             if not self.contract_address: reasons.append('missing_contract')
             if self.security.get('sellable') is not True or self.security.get('honeypot') is not False or self.security.get('holder_concentration') is None:
                 reasons.append('security_unverified')
+        trends=[chart.get('trend') for chart in self.chart_analysis if chart.get('status')=='ok']
+        bullish=trends.count('bullish'); bearish=trends.count('bearish')
+        if bullish>=3: self.direction_bias='long'
+        elif bearish>=3: self.direction_bias='short'
+        alignment=max(bullish,bearish)/len(trends) if trends else 0
+        self.trade_score=min(100,round(35+45*alignment+min(20,self.volume_brl/100_000_000))) if not reasons else 0
         self.rejection_reasons=sorted(set(reasons))
         self.execution_eligible=not self.rejection_reasons
         return self
@@ -74,6 +83,7 @@ def eligible_candidates(candidates,limit=12,require_chart_history=True):
     return sorted(approved,key=lambda c:(c.volume_brl,c.liquidity_brl),reverse=True)[:limit]
 
 class Market:
+    CHART_INTERVALS=('5m','15m','1h','4h')
     def __init__(self,client=None):
         self.client=client or httpx.Client(timeout=4,headers={'User-Agent':'crypto-harness/0.1'})
 
@@ -83,27 +93,22 @@ class Market:
         return r.json()
 
     def _charts(self,venue_symbol,rate,errors):
-        try:
-            candles=self.get('https://data-api.binance.vision/api/v3/klines',params={'symbol':venue_symbol,'interval':'5m','limit':405})
-            stamp=datetime.now(timezone.utc).timestamp()*1000
-            five=[{'time_ms':int(c[0]),'open':float(c[1])*rate,'high':float(c[2])*rate,'low':float(c[3])*rate,'close':float(c[4])*rate,'volume':float(c[5])} for c in candles if int(c[6])<=stamp]
-            ten=aggregate_chart_bars(five,10)
-            twenty=aggregate_chart_bars(five,20)
-            return [
-                analyze_ohlcv([{key:value for key,value in bar.items() if key!='time_ms'} for bar in five[-100:]],'5m'),
-                analyze_ohlcv(ten[-100:],'10m'),
-                analyze_ohlcv(twenty[-100:],'20m'),
-            ]
-        except (httpx.HTTPError,ValueError,KeyError,TypeError,IndexError):
-            errors.append('binance:'+venue_symbol+':chart_data_unavailable')
-            return []
+        charts=[]
+        for interval in self.CHART_INTERVALS:
+            try:
+                candles=self.get('https://data-api.binance.vision/api/v3/klines',params={'symbol':venue_symbol,'interval':interval,'limit':101})
+                stamp=datetime.now(timezone.utc).timestamp()*1000
+                closed=[{'open':float(c[1])*rate,'high':float(c[2])*rate,'low':float(c[3])*rate,'close':float(c[4])*rate,'volume':float(c[5])} for c in candles if int(c[6])<=stamp]
+                charts.append(analyze_ohlcv(closed[-100:],interval))
+            except (httpx.HTTPError,ValueError,KeyError,TypeError,IndexError):
+                errors.append('binance:'+venue_symbol+':'+interval+'_history_unavailable')
+        return charts
 
     def _binance(self,discovery,errors):
         rows=self.get('https://data-api.binance.vision/api/v3/ticker/24hr')
         if not isinstance(rows,list): raise ValueError('ticker list expected')
         by_symbol={row.get('symbol'):row for row in rows}
-        conversion=D(str(by_symbol.get('USDTBRL',{}).get('lastPrice','0')))
-        if conversion<=0: raise ValueError('USDTBRL conversion unavailable')
+        conversion=D('1') # USDT is the USD proxy for this USD-denominated paper account.
         candidates=[]
         blocked=('UPUSDT','DOWNUSDT','BULLUSDT','BEARUSDT')
         liquid=[row for row in rows if isinstance(row,dict) and str(row.get('symbol','')).endswith('USDT') and not str(row.get('symbol','')).endswith(blocked) and float(row.get('quoteVolume',0) or 0)>0]

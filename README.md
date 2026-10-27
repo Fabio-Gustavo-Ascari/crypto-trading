@@ -65,8 +65,9 @@ saída. Quedas de energia não permitem monitorar posições.
 
 ## Dados e escopo
 
-- Binance: descoberta dinâmica dos pares USDT mais líquidos, normalizados para BRL
-  pela cotação USDTBRL, com bid/ask, volume e até 100 candles fechados em 5m, 15m,
+- Binance: descoberta dinâmica dos pares USDT mais líquidos. A carteira paper é
+  denominada em USD e trata USDT como proxy de USD, com bid/ask, volume e até 100
+  candles fechados em 5m, 15m,
   1h e 4h por ciclo de pesquisa. A IA recebe tendência
   EMA, RSI, ATR, suporte/resistência, volume relativo e padrões detectados — não só
   um candle atrasado nem um candle ainda em formação.
@@ -84,14 +85,17 @@ via variável de ambiente `COINGECKO_DEMO_KEY`. `.env` não é carregado automat
 
 ## Regras e contabilidade
 
-R$200 iniciais, 5% de margem por posição, três posições, stop obrigatório.
+US$1.000 iniciais, 8% de margem por posição (até US$80), três posições e stop
+obrigatório. O perfil é **assertivo**: a IA deve procurar entradas long/short com
+direção e score claros; divergência normal entre períodos não basta, por si só, para
+HOLD. Limites de perda, liquidação, evidência e stop continuam independentes da IA.
 Bloqueia entradas com perda de 3% diária ou 8% desde o início do experimento (não
 renova por semana). Saídas continuam permitidas. Preços expiram em 180 segundos.
 Não reforça posições existentes. O broker aceita somente cotações recentes marcadas
 como elegíveis pelo pipeline; fontes de pesquisa não podem criar uma ordem por si só.
 
 O paper simula contratos direcionais: long lucra quando o preço sobe e short quando
-cai. `amount_brl` é a margem e a IA pode propor qualquer alavancagem >= 1, sem teto
+cai. O campo legado `amount_brl` representa margem em USD e a IA pode propor qualquer alavancagem >= 1, sem teto
 fixo nesta fase de teste. O motor ainda recusa margem insuficiente, stop que não
 protege antes da liquidação estimada, preço antigo e dados/evidências ausentes.
 Paper estima taxa de 0,1% sobre o notional e slippage adverso de 0,2% por lado, além do spread.

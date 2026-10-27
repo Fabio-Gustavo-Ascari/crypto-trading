@@ -39,3 +39,13 @@ def test_hold_is_recorded_only_after_all_model_attempts_fail(tmp_path,monkeypatc
     result=cycle(store,Broker(store,Policy()),GoodMarket(),ai=True,max_daily_calls=1)
     assert result['status']=='HOLD'
     assert any(event['kind']=='agent_failure' and event['data']['category']=='all_models_failed' for event in store.report()['recent_events'])
+
+def test_failed_models_refund_the_cycle_budget(tmp_path,monkeypatch):
+    from crypto_harness.agent import AgentFailure
+    from tests.test_core import quote
+    class GoodMarket:
+        def collect(self,discovery=False): return {'BTC':quote()}, {'approved_candidates':[{'symbol':'BTC'}]}, []
+    monkeypatch.setattr('crypto_harness.service.decide_with_fallback',lambda *a,**k: (_ for _ in ()).throw(AgentFailure('invalid_json','bad schema','schema error','gpt-6-luna')))
+    store=Store(tmp_path/'refund.db')
+    cycle(store,Broker(store,Policy()),GoodMarket(),ai=True,max_daily_calls=1)
+    assert store.report()['calls']=={}

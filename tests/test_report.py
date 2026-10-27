@@ -15,7 +15,7 @@ def test_report_net_pnl_and_fees_match_cash(tmp_path):
     b.execute(buy('sell').model_copy(update={'action':'CLOSE_LONG'}),q)
     b.protect(q)
     report=s.report()
-    assert abs(Decimal(report['summary']['realized_pnl_brl'])-(Decimal(report['state']['cash'])-200)) < Decimal('1e-20')
+    assert abs(Decimal(report['summary']['realized_pnl_brl'])-(Decimal(report['state']['cash'])-1000)) < Decimal('1e-20')
     assert Decimal(report['summary']['estimated_fees_brl'])>0
     assert report['summary']['filled_orders']==2
     assert Decimal(report['last_valuation']['equity'])==Decimal(report['state']['cash'])

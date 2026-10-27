@@ -51,6 +51,7 @@ def review_positions(store,broker,market,ai=False,max_daily_calls=8,model=None,s
         store.event('position_review_usage',usage)
         store.event('position_review_attempts',{'attempts':attempts,'selected_model':attempts[-1]['model']})
     except AgentFailure as error:
+        store.release_call()
         store.event('agent_failure',{'category':error.category,'model':error.model,'error':str(error),'stderr':error.stderr,'phase':'position_review'})
         return None
     if proposal.action not in ('CLOSE_LONG','CLOSE_SHORT') or proposal.symbol not in state['positions']:
@@ -79,6 +80,7 @@ def cycle(store,broker,market,ai=False,max_daily_calls=8,model=None,stop_event=N
             store.event('agent_usage',usage)
             store.event('agent_attempts',{'attempts':attempts,'selected_model':attempts[-1]['model']})
         except AgentFailure as error:
+            store.release_call()
             store.event('agent_failure',{'category':error.category,'model':error.model,'error':str(error),'stderr':error.stderr})
             proposal=hold('All configured AI models failed; execution skipped')
         except (RuntimeError,ValueError,OSError) as error:
@@ -111,8 +113,10 @@ def run(directory,once=False,ai=True,interval=900,monitor_interval=30,position_r
     with run_lock(directory):
         stop_path=directory/'stop.request'
         stop_path.unlink(missing_ok=True)
-        store=Store(directory/'harness.db')
-        broker=Broker(store,Policy())
+        policy=Policy()
+        store=Store(directory/'harness.db',policy.initial_cash)
+        store.rebase_pristine_capital(policy.initial_cash)
+        broker=Broker(store,policy)
         done=threading.Event()
         calls=0
         failures=0

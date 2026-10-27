@@ -1,6 +1,6 @@
 import httpx
 from crypto_harness.market import Market, aggregate_chart_bars
-from crypto_harness.market import AssetCandidate, eligible_candidates
+from crypto_harness.market import AssetCandidate, Market, eligible_candidates
 
 def test_all_providers_down_yields_empty_quotes():
     client=httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(503)))
@@ -33,6 +33,14 @@ def test_liquid_cex_candidate_is_bounded_for_execution():
     approved=eligible_candidates(candidates,limit=8)
     assert len(approved)==8
     assert all(candidate.execution_eligible for candidate in approved)
+
+def test_stablecoins_are_not_directional_execution_candidates():
+    candidate=AssetCandidate(symbol='USDT',source='binance',venue_symbol='USDTUSDT',liquidity_brl=1_000_000,volume_brl=1_000_000,age_hours=100,history_bars=100,security={'sellable':True,'honeypot':False,'holder_concentration':0},evidence_id='stable')
+    assert not candidate.execution_eligible
+    assert 'stablecoin_not_directional' in candidate.rejection_reasons
+
+def test_chart_timeframes_are_fixed_for_the_current_runner():
+    assert Market.CHART_INTERVALS == ('5m','15m','1h','4h')
 
 def test_aggregate_chart_bars_builds_complete_10m_and_20m_periods_only():
     bars=[

@@ -50,8 +50,9 @@ class Proposal(Strict):
     evidence_ids: list[str] = Field(max_length=20)
 
 class Policy(Strict):
-    initial_cash: D = D('200')
-    position_fraction: D = D('.05')
+    initial_cash: D = D('1000')
+    currency: Literal['USD'] = 'USD'
+    position_fraction: D = D('.08')
     daily_loss: D = D('.03')
     experiment_loss: D = D('.08')
     max_positions: int = 3
@@ -64,7 +65,7 @@ class Policy(Strict):
         return sha256(self.model_dump_json().encode()).hexdigest()
 
 class Store:
-    def __init__(self,path):
+    def __init__(self,path,initial_cash=D('1000')):
         self.path=Path(path)
         self.path.parent.mkdir(parents=True,exist_ok=True)
         with self.connect() as c:
@@ -74,7 +75,8 @@ class Store:
             CREATE TABLE IF NOT EXISTS decisions(id TEXT PRIMARY KEY, at TEXT NOT NULL, body TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS calls(day TEXT PRIMARY KEY, count INTEGER NOT NULL);
             ''')
-            c.execute('INSERT OR IGNORE INTO state VALUES(1,?)',(json.dumps({'cash':'200','positions':{},'day':day(),'day_equity':'200','peak':'200','halted_day':None,'halted_experiment':False}),))
+            cash=str(initial_cash)
+            c.execute('INSERT OR IGNORE INTO state VALUES(1,?)',(json.dumps({'cash':cash,'positions':{},'day':day(),'day_equity':cash,'peak':cash,'halted_day':None,'halted_experiment':False}),))
 
     @contextmanager
     def connect(self):
@@ -99,6 +101,28 @@ class Store:
             c.execute('INSERT INTO calls VALUES(?,1) ON CONFLICT(day) DO UPDATE SET count=count+1',(day(),))
             return True
 
+    def release_call(self):
+        """Undo a reserved cycle when no model produced a usable decision."""
+        with self.connect() as c:
+            c.execute('BEGIN IMMEDIATE')
+            row=c.execute('SELECT count FROM calls WHERE day=?',(day(),)).fetchone()
+            if not row: return
+            if row[0] <= 1: c.execute('DELETE FROM calls WHERE day=?',(day(),))
+            else: c.execute('UPDATE calls SET count=count-1 WHERE day=?',(day(),))
+
+    def rebase_pristine_capital(self, initial_cash):
+        """Upgrade an untouched paper wallet without rewriting its audit trail."""
+        with self.connect() as c:
+            c.execute('BEGIN IMMEDIATE')
+            state=self.state(c)
+            filled=c.execute("SELECT count(*) FROM decisions WHERE json_extract(body,'$.status')='FILLED'").fetchone()[0]
+            if state['positions'] or filled or D(state['cash']) >= D(initial_cash): return False
+            cash=str(initial_cash)
+            state.update(cash=cash,day_equity=cash,peak=cash,halted_day=None,halted_experiment=False)
+            c.execute('UPDATE state SET body=? WHERE id=1',(json.dumps(state),))
+            c.execute('INSERT INTO events(at,kind,body) VALUES(?,?,?)',(now().isoformat(),'capital_rebased',json.dumps({'initial_cash':cash,'currency':'USD'})))
+            return True
+
     def report(self):
         with self.connect() as c:
             decisions=[json.loads(r[0]) for r in c.execute('SELECT body FROM decisions ORDER BY at')]
@@ -108,8 +132,11 @@ class Store:
             valuations=[json.loads(r[0]) for r in c.execute("SELECT body FROM events WHERE kind='valuation'")]
             filled=[d for d in decisions if d['status']=='FILLED']
             state=self.state(c)
-            summary={'realized_pnl_brl':str(sum((D(d.get('pnl','0')) for d in filled),D(0))),
-                     'estimated_fees_brl':str(sum((D(d['fee']) for d in filled),D(0))),
+            realized=str(sum((D(d.get('pnl','0')) for d in filled),D(0)))
+            fees=str(sum((D(d['fee']) for d in filled),D(0)))
+            summary={'realized_pnl_usd':realized,'estimated_fees_usd':fees,
+                     # Deprecated compatibility aliases; monetary values are USD.
+                     'realized_pnl_brl':realized,'estimated_fees_brl':fees,
                      'filled_orders':len(filled),'decision_counts':{s:sum(d['status']==s for d in decisions) for s in ('FILLED','HOLD','REJECT','REJECTED')},
                      'max_drawdown':str(max((D(v['drawdown']) for v in valuations),default=D(0))),
                      'unclosed_positions':list(state['positions'])}

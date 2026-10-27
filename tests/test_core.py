@@ -22,12 +22,12 @@ def test_fill_idempotent_and_sell_roundtrip(broker):
     sell=buy('sell').model_copy(update={'action':'CLOSE_LONG'})
     assert broker.execute(sell,q)['status']=='FILLED'
     assert not broker.store.state()['positions']
-    assert Decimal(broker.store.state()['cash']) < 200
+    assert Decimal(broker.store.state()['cash']) < 1000
 
-@pytest.mark.parametrize('q,amount',[(quote(age=400),9),(quote(),11)])
+@pytest.mark.parametrize('q,amount',[(quote(age=400),9),(quote(),81)])
 def test_reject_stale_or_oversize(broker,q,amount):
     assert broker.execute(buy(amount=amount),{'BTC':q})['status']=='REJECTED'
-    assert Decimal(broker.store.state()['cash'])==200
+    assert Decimal(broker.store.state()['cash'])==1000
 
 def test_missing_evidence_and_unknown_asset_rejected(broker):
     p=buy().model_copy(update={'evidence_ids':[]})
@@ -48,6 +48,15 @@ def test_stop_works_without_model(broker):
 def test_nan_is_invalid():
     with pytest.raises(ValueError): quote(float('nan'))
 
+def test_default_paper_capital_is_one_thousand_usd():
+    assert Policy().initial_cash == Decimal('1000')
+    assert Policy().currency == 'USD'
+
+def test_pristine_legacy_wallet_can_be_rebased_to_new_capital(tmp_path):
+    store=Store(tmp_path/'legacy.db',Decimal('200'))
+    assert store.rebase_pristine_capital(Decimal('1000'))
+    assert Decimal(store.state()['cash']) == Decimal('1000')
+
 def test_restart_restores_positions(tmp_path):
     path=tmp_path/'restart.db'
     b=Broker(Store(path),Policy())
@@ -59,7 +68,7 @@ def test_loss_limit_latched_and_sell_still_allowed(broker):
     broker.execute(buy(),{'BTC':quote()})
     with broker.store.connect() as c:
         state=broker.store.state(c)
-        state['cash']='170'
+        state['cash']='850'
         c.execute('UPDATE state SET body=? WHERE id=1',(json.dumps(state),))
     broker.protect({'BTC':quote()})
     p=buy('new').model_copy(update={'symbol':'ETH'})
