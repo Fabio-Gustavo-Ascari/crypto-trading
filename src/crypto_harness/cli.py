@@ -16,6 +16,7 @@ def main():
         p=sub.add_parser(name)
         p.add_argument('--observe',action='store_true',help='Market data only; zero AI calls')
         p.add_argument('--interval',type=int,default=900)
+        p.add_argument('--position-review-interval',type=int,default=60,help='Seconds between reviews of open positions')
         p.add_argument('--max-calls',type=int,default=8)
         p.add_argument('--max-daily-calls',type=int,default=8)
         p.add_argument('--model',default=None,help='Optional supported Codex model name')
@@ -25,8 +26,8 @@ def main():
     directory=args.data_dir.resolve()
     try:
         if args.command in ('start','once'):
-            if args.interval<30 or not 0<=args.max_calls<=100 or not 0<=args.max_daily_calls<=100 or (args.max_cycles is not None and args.max_cycles<1): parser.error('interval >=30; calls 0..100; max-cycles >=1')
-            run(directory,once=args.command=='once',ai=not args.observe,interval=args.interval,max_calls=args.max_calls,max_daily_calls=args.max_daily_calls,model=args.model,max_cycles=args.max_cycles)
+            if args.interval<30 or args.position_review_interval<30 or not 0<=args.max_calls<=100 or not 0<=args.max_daily_calls<=100 or (args.max_cycles is not None and args.max_cycles<1): parser.error('intervals >=30; calls 0..100; max-cycles >=1')
+            run(directory,once=args.command=='once',ai=not args.observe,interval=args.interval,position_review_interval=args.position_review_interval,max_calls=args.max_calls,max_daily_calls=args.max_daily_calls,model=args.model,max_cycles=args.max_cycles)
         elif args.command=='stop':
             directory.mkdir(parents=True,exist_ok=True)
             (directory/'stop.request').touch()

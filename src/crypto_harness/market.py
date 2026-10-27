@@ -21,6 +21,7 @@ class AssetCandidate(BaseModel):
     volume_brl: float = Field(default=0,ge=0)
     age_hours: float | None = Field(default=None,ge=0)
     history_bars: int = Field(default=0,ge=0)
+    chart_status: str = Field(default='unknown')
     security: dict = Field(default_factory=dict)
     evidence_id: str
     execution_eligible: bool = False
@@ -32,7 +33,9 @@ class AssetCandidate(BaseModel):
         reasons=[]
         if self.liquidity_brl < 25_000: reasons.append('liquidity_below_minimum')
         if self.volume_brl < 10_000: reasons.append('volume_below_minimum')
-        if self.history_bars < 60: reasons.append('insufficient_history')
+        if self.chart_status == 'not_enriched': reasons.append('chart_not_enriched')
+        elif self.chart_status == 'unavailable': reasons.append('chart_data_unavailable')
+        elif self.history_bars < 60: reasons.append('chart_window_insufficient')
         if self.source == 'dexscreener':
             if not self.contract_address: reasons.append('missing_contract')
             if self.security.get('sellable') is not True or self.security.get('honeypot') is not False or self.security.get('holder_concentration') is None:
@@ -41,8 +44,17 @@ class AssetCandidate(BaseModel):
         self.execution_eligible=not self.rejection_reasons
         return self
 
-def eligible_candidates(candidates,limit=12):
-    approved=[candidate for candidate in candidates if candidate.execution_eligible]
+def eligible_candidates(candidates,limit=12,require_chart_history=True):
+    approved=[]
+    for candidate in candidates:
+        if candidate.execution_eligible:
+            approved.append(candidate)
+        elif not require_chart_history:
+            # Monitoring/position review needs a fresh quote, not a new entry
+            # thesis. Do not turn a chart-incomplete candidate into an entry.
+            non_chart=[reason for reason in candidate.rejection_reasons if reason.startswith('chart_') is False]
+            if candidate.source=='binance' and not non_chart:
+                approved.append(candidate)
     return sorted(approved,key=lambda c:(c.volume_brl,c.liquidity_brl),reverse=True)[:limit]
 
 class Market:
@@ -80,9 +92,11 @@ class Market:
             evidence=str(uuid4()); rate=float(conversion)
             # Research may list 20 liquid assets, but only the best 8 receive
             # four-timeframe enrichment and can become execution candidates.
-            charts=self._charts(venue,rate,errors) if discovery and rank<8 else []
+            enriched=discovery and rank<8
+            charts=self._charts(venue,rate,errors) if enriched else []
             history=min((chart.get('bars',0) for chart in charts),default=0)
-            candidate=AssetCandidate(symbol=symbol,source='binance',venue_symbol=venue,liquidity_brl=float(row['quoteVolume'])*rate,volume_brl=float(row['quoteVolume'])*rate,age_hours=10_000,history_bars=history,security={'sellable':True,'honeypot':False,'holder_concentration':0},evidence_id=evidence,chart_analysis=charts)
+            chart_status='ready' if history>=60 else 'unavailable' if enriched else 'not_enriched'
+            candidate=AssetCandidate(symbol=symbol,source='binance',venue_symbol=venue,liquidity_brl=float(row['quoteVolume'])*rate,volume_brl=float(row['quoteVolume'])*rate,age_hours=10_000,history_bars=history,chart_status=chart_status,security={'sellable':True,'honeypot':False,'holder_concentration':0},evidence_id=evidence,chart_analysis=charts)
             candidates.append((candidate,row,conversion))
         return candidates
 
@@ -95,7 +109,7 @@ class Market:
             for item in (trending.get('coins') or [])[:15]:
                 coin=item.get('item') or {}; symbol=str(coin.get('symbol','')).upper()
                 if symbol.isalnum() and len(symbol)<=20:
-                    output.append(AssetCandidate(symbol=symbol,source='coingecko_trending',network=None,liquidity_brl=0,volume_brl=0,history_bars=0,security={},evidence_id=str(uuid4())))
+                    output.append(AssetCandidate(symbol=symbol,source='coingecko_trending',network=None,liquidity_brl=0,volume_brl=0,history_bars=0,chart_status='unavailable',security={},evidence_id=str(uuid4())))
         except (httpx.HTTPError,ValueError,KeyError,TypeError): errors.append('coingecko:trending_unavailable')
         return output
 
@@ -116,7 +130,7 @@ class Market:
                     liquidity=float((pair.get('liquidity') or {}).get('usd',0))*5
                     volume=float((pair.get('volume') or {}).get('h24',0))*5
                     age=max(0,(datetime.now(timezone.utc).timestamp()-float(pair.get('pairCreatedAt',0))/1000)/3600) if pair.get('pairCreatedAt') else None
-                    output.append(AssetCandidate(symbol=symbol,source='dexscreener',network=network,contract_address=address,liquidity_brl=liquidity,volume_brl=volume,age_hours=age,history_bars=0,security={},evidence_id=str(uuid4())))
+                    output.append(AssetCandidate(symbol=symbol,source='dexscreener',network=network,contract_address=address,liquidity_brl=liquidity,volume_brl=volume,age_hours=age,history_bars=0,chart_status='unavailable',security={},evidence_id=str(uuid4())))
                 except (httpx.HTTPError,ValueError,KeyError,TypeError): errors.append('dexscreener:'+network+':pair_unavailable')
         except (httpx.HTTPError,ValueError,KeyError,TypeError): errors.append('dexscreener:profiles_unavailable')
         return output
@@ -135,7 +149,7 @@ class Market:
         except (httpx.HTTPError,ValueError,KeyError,TypeError,OverflowError): errors.append('binance:discovery_unavailable')
         if discovery:
             candidates.extend(self._coingecko(errors)); candidates.extend(self._dex(errors))
-        approved=eligible_candidates(candidates,limit=12)
+        approved=eligible_candidates(candidates,limit=12,require_chart_history=discovery)
         approved_symbols={candidate.symbol for candidate in approved}
         quotes={symbol:quote.model_copy(update={'execution_eligible':symbol in approved_symbols}) for symbol,quote in quotes.items() if symbol in approved_symbols}
         research={'summary':{'assets_researched':len(candidates),'assets_filtered':len(approved),'memecoins_analyzed':sum(c.source=='dexscreener' for c in candidates),'security_rejections':sum('security_unverified' in c.rejection_reasons for c in candidates)},'approved_candidates':[c.model_dump() for c in approved],'rejected_candidates':[c.model_dump() for c in candidates if not c.execution_eligible][:50]}

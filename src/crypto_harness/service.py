@@ -32,6 +32,34 @@ def run_lock(directory):
 def hold(reason):
     return Proposal(decision_id=str(uuid4()),action='HOLD',symbol='BTC',amount_brl=0,stop_pct=2,horizon_minutes=60,reason=reason,evidence_ids=[])
 
+def review_positions(store,broker,market,ai=False,max_daily_calls=8,model=None,stop_event=None):
+    """Review open positions frequently; risk protection remains model-independent."""
+    quotes,research,errors=market.collect(discovery=False)
+    broker.protect(quotes)
+    state=store.state()
+    if not state['positions']:
+        store.event('position_review',{'status':'no_open_positions','errors':errors})
+        return None
+    if stop_event and stop_event.is_set(): return None
+    if not ai or not store.reserve_call(max_daily_calls):
+        store.event('position_review',{'status':'skipped_ai_budget','positions':list(state['positions']),'errors':errors})
+        return None
+    context={'time_utc':now().isoformat(),'review_type':'open_position_review','rules':broker.policy.model_dump(mode='json'),'rules_hash':broker.policy.fingerprint,'portfolio':state,'evidence':{'quotes':{s:q.model_dump(mode='json') for s,q in quotes.items()},'approved_candidates':research.get('approved_candidates',[]),'errors':errors}}
+    store.event('position_review_input',context)
+    try:
+        proposal,usage,attempts=decide_with_fallback(context,model=model)
+        store.event('position_review_usage',usage)
+        store.event('position_review_attempts',{'attempts':attempts,'selected_model':attempts[-1]['model']})
+    except AgentFailure as error:
+        store.event('agent_failure',{'category':error.category,'model':error.model,'error':str(error),'stderr':error.stderr,'phase':'position_review'})
+        return None
+    if proposal.action not in ('CLOSE_LONG','CLOSE_SHORT') or proposal.symbol not in state['positions']:
+        store.event('position_review',{'status':'hold','reason':'review_did_not_request_valid_close','action':proposal.action})
+        return None
+    result=broker.execute(proposal,quotes)
+    store.event('position_review',{'status':result.get('status'),'action':proposal.action,'symbol':proposal.symbol,'reason':result.get('reason')})
+    return result
+
 def cycle(store,broker,market,ai=False,max_daily_calls=8,model=None,stop_event=None):
     quotes,research,errors=market.collect(discovery=True)
     snapshot={'quotes':{s:q.model_dump(mode='json') for s,q in quotes.items()},'research':research,'errors':errors}
@@ -78,7 +106,7 @@ def export_report(store,directory):
     path.write_text(json.dumps(report,indent=2,ensure_ascii=False),encoding='utf-8')
     return path
 
-def run(directory,once=False,ai=True,interval=900,monitor_interval=30,max_calls=8,max_daily_calls=8,model=None,max_cycles=None):
+def run(directory,once=False,ai=True,interval=900,monitor_interval=30,position_review_interval=60,max_calls=8,max_daily_calls=8,model=None,max_cycles=None):
     directory=Path(directory)
     with run_lock(directory):
         stop_path=directory/'stop.request'
@@ -92,6 +120,7 @@ def run(directory,once=False,ai=True,interval=900,monitor_interval=30,max_calls=
         market=Market()
         def monitor():
             watcher=Market()
+            elapsed_since_review=0
             try:
                 while not done.wait(monitor_interval):
                     if stop_path.exists(): done.set(); break
@@ -99,12 +128,16 @@ def run(directory,once=False,ai=True,interval=900,monitor_interval=30,max_calls=
                         quotes,_,errors=watcher.collect()
                         broker.protect(quotes)
                         store.event('monitor',{'errors':errors})
+                        elapsed_since_review += monitor_interval
+                        if elapsed_since_review >= position_review_interval:
+                            review_positions(store,broker,watcher,ai,max_daily_calls,model,done)
+                            elapsed_since_review=0
                     except Exception as e:
                         store.event('monitor_failure',{'type':type(e).__name__})
             finally: watcher.close()
         thread=threading.Thread(target=monitor,daemon=True)
         thread.start()
-        store.event('started',{'ai':ai,'interval':interval,'max_calls_session':max_calls,'max_calls_day':max_daily_calls,'model':model or default_model()})
+        store.event('started',{'ai':ai,'interval':interval,'position_review_interval':position_review_interval,'monitor_interval':monitor_interval,'max_calls_session':max_calls,'max_calls_day':max_daily_calls,'model':model or default_model()})
         print('Harness running. Ctrl+C or another terminal: crypto-harness stop',flush=True)
         try:
             while not done.is_set():
