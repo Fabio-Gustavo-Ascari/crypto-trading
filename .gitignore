@@ -13,5 +13,6 @@ docs/
 __pycache__/
 *.py[cod]
 .pytest_cache/
+.pytest-tmp/
 *.egg-info/
 .venv/
