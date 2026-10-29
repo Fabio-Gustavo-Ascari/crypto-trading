@@ -15,7 +15,7 @@ def main():
     for name in ('start','once'):
         p=sub.add_parser(name)
         p.add_argument('--observe',action='store_true',help='Market data only; zero AI calls')
-        p.add_argument('--interval',type=int,default=900)
+        p.add_argument('--interval',type=int,default=300)
         p.add_argument('--position-review-interval',type=int,default=60,help='Seconds between reviews of open positions')
         p.add_argument('--max-calls',type=int,default=8)
         p.add_argument('--max-daily-calls',type=int,default=8)

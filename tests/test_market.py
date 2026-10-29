@@ -1,4 +1,5 @@
 import httpx
+from datetime import datetime, timezone
 from crypto_harness.market import Market, aggregate_chart_bars
 from crypto_harness.market import AssetCandidate, Market, eligible_candidates
 
@@ -12,6 +13,17 @@ def test_bad_price_rejected():
         if 'binance' in str(r.url): return httpx.Response(200,json=[{'symbol':'BTCBRL','bidPrice':'NaN','askPrice':'1','closeTime':1}])
         return httpx.Response(200,json={})
     assert Market(httpx.Client(transport=httpx.MockTransport(response))).collect()[0]=={}
+
+def test_quote_refresh_keeps_liquid_cex_symbols_executable_without_chart_enrichment():
+    """The execution refresh must retain a fresh quote for a previously approved CEX market."""
+    now_ms=int(datetime.now(timezone.utc).timestamp()*1000)
+    def response(request):
+        if 'ticker/24hr' in str(request.url):
+            return httpx.Response(200,json=[{'symbol':'BTCUSDT','bidPrice':'100','askPrice':'101','closeTime':now_ms,'quoteVolume':'1000000'}])
+        return httpx.Response(200,json=[])
+    quotes,_,errors=Market(httpx.Client(transport=httpx.MockTransport(response))).collect(discovery=False)
+    assert errors==[]
+    assert quotes['BTC'].execution_eligible is True
 
 def test_coingecko_trending_is_research_only_when_binance_is_down():
     def response(r):
@@ -41,6 +53,11 @@ def test_stablecoins_are_not_directional_execution_candidates():
 
 def test_chart_timeframes_are_fixed_for_the_current_runner():
     assert Market.CHART_INTERVALS == ('5m','15m','1h','4h')
+
+def test_aggressive_discovery_expands_liquid_cex_and_dex_research():
+    assert Market.MAX_CEX_CANDIDATES >= 50
+    assert Market.MAX_CEX_ENRICHED >= 20
+    assert Market.MAX_DEX_PROFILES >= 10
 
 def test_aggregate_chart_bars_builds_complete_10m_and_20m_periods_only():
     bars=[

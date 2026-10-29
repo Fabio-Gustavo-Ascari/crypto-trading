@@ -84,6 +84,9 @@ def eligible_candidates(candidates,limit=12,require_chart_history=True):
 
 class Market:
     CHART_INTERVALS=('5m','15m','1h','4h')
+    MAX_CEX_CANDIDATES=50
+    MAX_CEX_ENRICHED=20
+    MAX_DEX_PROFILES=10
     def __init__(self,client=None):
         self.client=client or httpx.Client(timeout=4,headers={'User-Agent':'crypto-harness/0.1'})
 
@@ -112,13 +115,14 @@ class Market:
         candidates=[]
         blocked=('UPUSDT','DOWNUSDT','BULLUSDT','BEARUSDT')
         liquid=[row for row in rows if isinstance(row,dict) and str(row.get('symbol','')).endswith('USDT') and not str(row.get('symbol','')).endswith(blocked) and float(row.get('quoteVolume',0) or 0)>0]
-        for rank,row in enumerate(sorted(liquid,key=lambda item:float(item['quoteVolume']),reverse=True)[:20]):
+        for rank,row in enumerate(sorted(liquid,key=lambda item:float(item['quoteVolume']),reverse=True)[:self.MAX_CEX_CANDIDATES]):
             venue=row['symbol']; symbol=venue[:-4]
             if not symbol.isalnum() or not 2<=len(symbol)<=20 or symbol in {'USDT','USDC','FDUSD','TUSD','USDP','BUSD'}: continue
             evidence=str(uuid4()); rate=float(conversion)
-            # Research may list 20 liquid assets, but only the best 8 receive
+            # Research may scan many liquid assets, but only the highest-volume
+            # group receives four-timeframe enrichment for the decision prompt.
             # four-timeframe enrichment and can become execution candidates.
-            enriched=discovery and rank<8
+            enriched=discovery and rank<self.MAX_CEX_ENRICHED
             charts=self._charts(venue,rate,errors) if enriched else []
             history=min((chart.get('bars',0) for chart in charts),default=0)
             chart_status='ready' if history>=60 else 'unavailable' if enriched else 'not_enriched'
@@ -143,7 +147,7 @@ class Market:
         output=[]
         try:
             profiles=self.get('https://api.dexscreener.com/token-profiles/latest/v1')
-            for profile in (profiles or [])[:3]:
+            for profile in (profiles or [])[:self.MAX_DEX_PROFILES]:
                 network=str(profile.get('chainId',''))[:30] or None
                 address=str(profile.get('tokenAddress',''))[:100] or None
                 if not network or not address: continue
@@ -168,7 +172,12 @@ class Market:
             cex=self._binance(discovery,errors)
             candidates.extend(item[0] for item in cex)
             for candidate,row,conversion in cex:
-                if not candidate.execution_eligible: continue
+                # A lightweight refresh deliberately skips chart enrichment.  It
+                # still needs fresh executable quotes for symbols that passed
+                # the full discovery cycle; the only temporary rejection here
+                # is therefore chart-related.
+                refreshable=(not discovery and candidate.source=='binance' and all(reason.startswith('chart_') for reason in candidate.rejection_reasons))
+                if not candidate.execution_eligible and not refreshable: continue
                 bid=D(str(row['bidPrice']))*conversion; ask=D(str(row['askPrice']))*conversion
                 quote=Quote(symbol=candidate.symbol,bid=bid,ask=ask,observed_at=datetime.fromtimestamp(int(row['closeTime'])/1000,timezone.utc),source='binance:spot:'+candidate.venue_symbol,evidence_id=candidate.evidence_id,execution_eligible=True)
                 if quote.fresh(): quotes[quote.symbol]=quote

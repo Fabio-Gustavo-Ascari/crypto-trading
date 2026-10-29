@@ -108,7 +108,7 @@ def export_report(store,directory):
     path.write_text(json.dumps(report,indent=2,ensure_ascii=False),encoding='utf-8')
     return path
 
-def run(directory,once=False,ai=True,interval=900,monitor_interval=30,position_review_interval=60,max_calls=8,max_daily_calls=8,model=None,max_cycles=None):
+def run(directory,once=False,ai=True,interval=300,monitor_interval=30,position_review_interval=60,max_calls=8,max_daily_calls=8,model=None,max_cycles=None):
     directory=Path(directory)
     with run_lock(directory):
         stop_path=directory/'stop.request'
